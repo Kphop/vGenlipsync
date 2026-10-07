@@ -53,7 +53,14 @@ def build_payload(args: argparse.Namespace) -> dict:
         payload["audio_path"] = args.audio_path
     if args.steps:
         payload["inference_steps"] = args.steps
-    return {"input": payload}
+
+    body: dict = {"input": payload}
+    if args.exec_timeout:
+        # Overrides the endpoint's Execution Timeout for this job only. A cold
+        # request pays image pull plus a ~5 GB model load before inference even
+        # starts, which can blow a console default that looks generous.
+        body["policy"] = {"executionTimeout": int(args.exec_timeout * 1000)}
+    return body
 
 
 def submit(session: requests.Session, endpoint: str, payload: dict) -> str:
@@ -287,7 +294,12 @@ def main() -> int:
                    help="directory for --save-video mp4s (default: outputs/)")
     p.add_argument("--sleep", type=float, default=0.0,
                    help="seconds to wait between runs; exceed the idle timeout to force cold starts")
-    p.add_argument("--timeout", type=float, default=900.0, help="per-job timeout")
+    p.add_argument("--timeout", type=float, default=900.0,
+                   help="how long this client waits before giving up on a job")
+    p.add_argument("--exec-timeout", type=float, default=None,
+                   help="override the endpoint's Execution Timeout for these jobs, "
+                        "in seconds (sent as a per-request policy). Use this when runs "
+                        "fail with 'executionTimeout exceeded'.")
     p.add_argument("--out", help="write raw results to this JSON file")
     args = p.parse_args()
 
