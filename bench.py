@@ -238,9 +238,12 @@ def report(results: list[dict], usd_per_hour: float, idle_sec: float) -> None:
     total_vram = ok[0].get("total_vram_gb")
     if peak and total_vram:
         headroom = total_vram - peak
-        verdict = (
-            "a smaller tier may fit -- try it" if headroom > 6 else "this tier is right-sized"
-        )
+        if headroom > 6:
+            verdict = "a smaller tier may fit -- try it"
+        elif headroom < 3:
+            verdict = f"only {headroom:.1f} GB spare -- OOM risk, size up"
+        else:
+            verdict = "this tier is right-sized"
         print(f"  Peak VRAM           {peak:.1f} GB of {total_vram:.1f} GB  ({verdict})")
 
     saved = [r["saved"] for r in ok if r.get("saved")]
@@ -253,7 +256,9 @@ def report(results: list[dict], usd_per_hour: float, idle_sec: float) -> None:
 
     audio_sec = ok[0].get("audio_sec")
     print()
-    print(f"Monthly projection  (warm, {audio_sec or '?'}s clips)")
+    # Label the basis honestly: with no warm run yet these numbers carry the
+    # cold-start cost and overstate steady-state spend.
+    print(f"Monthly projection  ({label}, {audio_sec or '?'}s clips)")
     for volume in (100, 1_000, 10_000):
         print(f"  {volume:>6,} clips/mo    ${warm_cost * volume:>10,.2f}")
 
@@ -261,8 +266,13 @@ def report(results: list[dict], usd_per_hour: float, idle_sec: float) -> None:
     print(f"vs pay-per-run hosted LatentSync  ({audio_sec or '?'}s clip)")
     print(f"  {'RunPod (this)':<16} ${warm_cost:.4f}")
     for name, price in ALTERNATIVES:
-        ratio = price / warm_cost if warm_cost else float("inf")
-        print(f"  {name:<16} ${price:.4f}   {ratio:.1f}x more")
+        if not warm_cost:
+            verdict = "n/a"
+        elif price > warm_cost:
+            verdict = f"{price / warm_cost:.2f}x more expensive than RunPod"
+        else:
+            verdict = f"{warm_cost / price:.2f}x CHEAPER than RunPod"
+        print(f"  {name:<16} ${price:.4f}   {verdict}")
     print()
     print(
         "  Note: RunPod wins per clip but carries the image build, the ~17 GB\n"
