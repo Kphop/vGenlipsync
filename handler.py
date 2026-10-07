@@ -655,14 +655,19 @@ def _startup() -> None:
             log.error("eager model load failed:\n%s", traceback.format_exc())
 
 
+def _concurrency_modifier(_current_concurrency: int) -> int:
+    """Hold each worker at one in-flight job.
+
+    The GPU is the bottleneck, and overlapping requests would both distort the
+    timings this endpoint exists to measure and risk OOM at 18 GB per job.
+    """
+    return 1
+
+
 _startup()
 
 if __name__ == "__main__":
-    runpod.serverless.start(
-        {
-            "handler": handler,
-            # One inference at a time per worker: the GPU is the bottleneck and
-            # overlapping requests would both distort timings and risk OOM.
-            "concurrency_modifier": lambda _current: 1,
-        }
-    )
+    # Written on one line with `start({` adjacent: RunPod's GitHub integration
+    # scans the repo for that literal to confirm the repo is a serverless
+    # worker, and a multi-line call makes it report the handler as missing.
+    runpod.serverless.start({"handler": handler, "concurrency_modifier": _concurrency_modifier})
