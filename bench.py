@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""Measure what one LatentSync clip actually costs on a RunPod endpoint.
+
+Runs the endpoint N times, reads the telemetry each response carries, and prints
+the numbers that decide whether this deployment is worth keeping: warm vs cold
+cost per clip, the realtime factor needed to project other clip lengths, and
+peak VRAM so you know whether a cheaper GPU tier would survive.
+
+Runs on your machine, not in the container.
+
+    set RUNPOD_API_KEY=...
+    set RUNPOD_ENDPOINT_ID=...
+    python bench.py --n 5
+
+By default it uses the demo assets baked into the image, so there is no media to
+host and no download variance in the timings.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import statistics
+import sys
+import time
+
+import requests
+
+API_BASE = "https://api.runpod.ai/v2"
+POLL_INTERVAL_SEC = 3
+TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"}
+
+# Published per-run prices for hosted LatentSync, for comparison. Verify before
+# relying on them; provider pricing moves.
+ALTERNATIVES = (("WaveSpeedAI", 0.05), ("Replicate", 0.10))
+
+
+def build_payload(args: argparse.Namespace) -> dict:
+    payload: dict = {"return_video": not args.download_video}
+    if args.video_url:
+        payload["video_url"] = args.video_url
+    else:
+        payload["video_path"] = args.video_path
+    if args.audio_url:
+        payload["audio_url"] = args.audio_url
+    else:
+        payload["audio_path"] = args.audio_path
+    if args.steps:
+        payload["inference_steps"] = args.steps
+    return {"input": payload}
+
+
+def submit(session: requests.Session, endpoint: str, payload: dict) -> str:
+    resp = session.post(f"{API_BASE}/{endpoint}/run", json=payload, timeout=60)
+    resp.raise_for_status()
+    body = resp.json()
+    if "id" not in body:
+        raise RuntimeError(f"unexpected /run response: {body}")
+    return body["id"]
+
+
+def wait(session: requests.Session, endpoint: str, job_id: str, timeout: float) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        resp = session.get(f"{API_BASE}/{endpoint}/status/{job_id}", timeout=60)
+        resp.raise_for_status()
+        body = resp.json()
+        status = body.get("status")
+        if status in TERMINAL:
+            return body
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"job {job_id} still {status} after {timeout:.0f}s")
+        time.sleep(POLL_INTERVAL_SEC)
+
+
+def run_once(session, endpoint, payload, timeout) -> dict:
+    wall_start = time.monotonic()
+    job_id = submit(session, endpoint, payload)
+    body = wait(session, endpoint, job_id, timeout)
+    wall = time.monotonic() - wall_start
+
+    out = body.get("output") or {}
+    if body.get("status") != "COMPLETED" or "error" in out:
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "status": body.get("status"),
+            "error": out.get("error") or body.get("error") or "unknown",
+        }
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "wall_sec": wall,
+        # RunPod's own numbers are authoritative for billing; our in-handler
+        # timings explain where that time went.
+        "runpod_execution_sec": (body.get("executionTime") or 0) / 1000.0,
+        "runpod_delay_sec": (body.get("delayTime") or 0) / 1000.0,
+        "cold": out.get("worker", {}).get("cold_start"),
+        "ready_after_sec": out.get("worker", {}).get("ready_after_sec"),
+        "model_build_sec": out.get("worker", {}).get("model_build_sec"),
+        "inference_sec": out.get("timings_sec", {}).get("inference"),
+        "total_sec": out.get("timings_sec", {}).get("total"),
+        "rtf": out.get("media", {}).get("realtime_factor"),
+        "audio_sec": out.get("media", {}).get("audio_sec"),
+        "peak_vram_gb": out.get("vram", {}).get("peak_reserved_gb"),
+        "total_vram_gb": out.get("vram", {}).get("total_gb"),
+        "gpu": out.get("vram", {}).get("gpu"),
+        "handler_usd": out.get("cost", {}).get("usd_this_request"),
+        "raw": out,
+    }
+
+
+def fmt(value, suffix="", width=0, nd=2):
+    text = "-" if value is None else f"{value:.{nd}f}{suffix}"
+    return text.rjust(width) if width else text
+
+
+def report(results: list[dict], usd_per_hour: float, idle_sec: float) -> None:
+    ok = [r for r in results if r["ok"]]
+    failed = [r for r in results if not r["ok"]]
+    usd_per_sec = usd_per_hour / 3600.0
+
+    print()
+    print("Run  Cold  Inference     Total   RunPod exec       RTF    PeakVRAM      $/clip")
+    print("-" * 80)
+    for i, r in enumerate(results, 1):
+        if not r["ok"]:
+            print(f"{i:>3}  FAILED  {r.get('status')}: {str(r.get('error'))[:50]}")
+            continue
+        billed = r["runpod_execution_sec"] or r["wall_sec"]
+        print(
+            f"{i:>3}"
+            f"{'  yes' if r['cold'] else '   no':>6}"
+            f"{fmt(r['inference_sec'], 's', 11)}"
+            f"{fmt(r['total_sec'], 's', 10)}"
+            f"{fmt(billed, 's', 14)}"
+            f"{fmt(r['rtf'], 'x', 10)}"
+            f"{fmt(r['peak_vram_gb'], 'GB', 12)}"
+            f"   ${billed * usd_per_sec:.4f}"
+        )
+
+    if not ok:
+        print(f"\nAll {len(results)} runs failed. Nothing to price.")
+        return
+
+    warm = [r for r in ok if not r["cold"]]
+    cold = [r for r in ok if r["cold"]]
+    billed_of = lambda r: r["runpod_execution_sec"] or r["wall_sec"]  # noqa: E731
+
+    print()
+    print(f"Summary  (n={len(ok)} ok, {len(failed)} failed)")
+    print(f"  GPU                 {ok[0].get('gpu') or 'unknown'}  @ ${usd_per_hour:.2f}/hr")
+
+    basis = warm or ok
+    billed_times = sorted(billed_of(r) for r in basis)
+    median_billed = statistics.median(billed_times)
+    label = "warm" if warm else "cold (no warm runs yet)"
+    print(f"  Billed per clip     median {median_billed:.1f}s  ({label})")
+    if len(billed_times) >= 2:
+        print(f"                      min {billed_times[0]:.1f}s  max {billed_times[-1]:.1f}s")
+
+    warm_cost = median_billed * usd_per_sec
+    print(f"  Cost per clip       ${warm_cost:.4f}")
+    print(f"  + idle timeout      ${(median_billed + idle_sec) * usd_per_sec:.4f}  ({idle_sec:.0f}s idle)")
+
+    if cold:
+        cold_billed = statistics.median(billed_of(r) for r in cold)
+        print(
+            f"  Cold start          ${cold_billed * usd_per_sec:.4f}/clip"
+            f"  (model load {fmt(cold[0]['model_build_sec'], 's')},"
+            f" ready after {fmt(cold[0]['ready_after_sec'], 's')})"
+        )
+
+    rtfs = [r["rtf"] for r in basis if r["rtf"]]
+    if rtfs:
+        rtf = statistics.median(rtfs)
+        per_min = rtf * 60 * usd_per_sec
+        print(f"  Realtime factor     {rtf:.2f}x  ->  1 min of audio ~ {rtf * 60:.0f}s ~ ${per_min:.4f}")
+
+    peak = max((r["peak_vram_gb"] for r in ok if r["peak_vram_gb"]), default=None)
+    total_vram = ok[0].get("total_vram_gb")
+    if peak and total_vram:
+        headroom = total_vram - peak
+        verdict = (
+            "a smaller tier may fit -- try it" if headroom > 6 else "this tier is right-sized"
+        )
+        print(f"  Peak VRAM           {peak:.1f} GB of {total_vram:.1f} GB  ({verdict})")
+
+    audio_sec = ok[0].get("audio_sec")
+    print()
+    print(f"Monthly projection  (warm, {audio_sec or '?'}s clips)")
+    for volume in (100, 1_000, 10_000):
+        print(f"  {volume:>6,} clips/mo    ${warm_cost * volume:>10,.2f}")
+
+    print()
+    print(f"vs pay-per-run hosted LatentSync  ({audio_sec or '?'}s clip)")
+    print(f"  {'RunPod (this)':<16} ${warm_cost:.4f}")
+    for name, price in ALTERNATIVES:
+        ratio = price / warm_cost if warm_cost else float("inf")
+        print(f"  {name:<16} ${price:.4f}   {ratio:.1f}x more")
+    print()
+    print(
+        "  Note: RunPod wins per clip but carries the image build, the ~17 GB\n"
+        "  pull and the cold-start tail. At low volume that overhead is the\n"
+        "  real cost; compare against your own time, not just these numbers."
+    )
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--n", type=int, default=3, help="number of runs (default 3)")
+    p.add_argument("--endpoint-id", default=os.environ.get("RUNPOD_ENDPOINT_ID"))
+    p.add_argument("--api-key", default=os.environ.get("RUNPOD_API_KEY"))
+    p.add_argument("--usd-per-hour", type=float, default=0.69,
+                   help="GPU price for cost math (default 0.69 = 24GB flex tier)")
+    p.add_argument("--idle-timeout", type=float, default=5.0,
+                   help="endpoint idle timeout, included in the full per-clip price")
+    p.add_argument("--video-path", default="assets/demo1_video.mp4",
+                   help="path to a file baked into the image (default: repo demo)")
+    p.add_argument("--audio-path", default="assets/demo1_audio.wav")
+    p.add_argument("--video-url", help="use a remote video instead of the baked asset")
+    p.add_argument("--audio-url")
+    p.add_argument("--steps", type=int, help="override inference_steps")
+    p.add_argument("--download-video", action="store_true",
+                   help="also return the mp4 as base64 (slower, bigger payload)")
+    p.add_argument("--sleep", type=float, default=0.0,
+                   help="seconds to wait between runs; exceed the idle timeout to force cold starts")
+    p.add_argument("--timeout", type=float, default=900.0, help="per-job timeout")
+    p.add_argument("--out", help="write raw results to this JSON file")
+    args = p.parse_args()
+
+    if not args.endpoint_id or not args.api_key:
+        p.error("set RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY, or pass --endpoint-id/--api-key")
+
+    payload = build_payload(args)
+    session = requests.Session()
+    session.headers.update(
+        {"Authorization": f"Bearer {args.api_key}", "Content-Type": "application/json"}
+    )
+
+    print(f"endpoint {args.endpoint_id}  n={args.n}  payload={json.dumps(payload['input'])}")
+    results = []
+    for i in range(args.n):
+        if i and args.sleep:
+            print(f"  sleeping {args.sleep:.0f}s before run {i + 1}")
+            time.sleep(args.sleep)
+        print(f"  run {i + 1}/{args.n} ...", end="", flush=True)
+        try:
+            r = run_once(session, args.endpoint_id, payload, args.timeout)
+        except Exception as exc:
+            r = {"ok": False, "status": "CLIENT_ERROR", "error": f"{type(exc).__name__}: {exc}"}
+        results.append(r)
+        if r["ok"]:
+            print(f" ok  {r['runpod_execution_sec']:.1f}s billed")
+        else:
+            print(f" FAILED  {str(r.get('error'))[:70]}")
+
+    report(results, args.usd_per_hour, args.idle_timeout)
+
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(results, fh, indent=2, default=str)
+        print(f"raw results -> {args.out}")
+
+    return 0 if any(r["ok"] for r in results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

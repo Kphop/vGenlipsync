@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+results*.json
+*.log
+# benchmark outputs and any local media
+out*.mp4
+*.wav
+!test_input.json

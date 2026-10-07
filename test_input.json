@@ -1,0 +1,7 @@
+{
+  "input": {
+    "video_path": "assets/demo1_video.mp4",
+    "audio_path": "assets/demo1_audio.wav",
+    "return_video": false
+  }
+}

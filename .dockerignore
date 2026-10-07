@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.git/
+.venv/
+venv/
+*.mp4
+*.wav
+*.json
+!test_input.json
+results*.json
+README.md
+bench.py

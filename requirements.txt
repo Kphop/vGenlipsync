@@ -1,0 +1,8 @@
+# Our additions only.
+#
+# LatentSync's own dependencies are installed from the pinned repo's
+# requirements.txt inside the Dockerfile. Do not duplicate them here --
+# the upstream pins (torch==2.5.1, numpy==1.26.4, opencv-python==4.9.0.80, ...)
+# are load-bearing and a second copy will drift.
+runpod>=1.7.0,<2.0.0
+requests>=2.31.0
