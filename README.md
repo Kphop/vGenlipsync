@@ -39,7 +39,7 @@ RunPod Console → Serverless → New Endpoint → Custom Source → Docker imag
 | ช่อง | ค่า | เหตุผล |
 |---|---|---|
 | Container Image | `<your image>` | |
-| GPU | **24 GB** (L4 / A5000 / RTX 3090) | ถูกสุดที่ VRAM พอ — $0.69/ชม |
+| GPU | **24 GB** — อ่าน "ผลที่วัดได้จริง" ก่อนเลือก | L4 วัดแล้วได้ $0.064/คลิป แพงกว่า WaveSpeed — อย่าเลือกตามเรตต่อชั่วโมง |
 | **Active Workers** | **0** | active = จ่าย 24 ชม. ต่อให้ไม่มี request |
 | **Max Workers** | **1** | กัน cold start หลายตัวพร้อมกันตอนทดสอบ |
 | **Idle Timeout** | **5 วินาที** | worker ยัง bill ตอน idle — ช่องนี้กินเงินเงียบที่สุด |
