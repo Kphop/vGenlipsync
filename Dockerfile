@@ -85,12 +85,17 @@ RUN python3 "${APP_ROOT}/scripts/prefetch.py"
 ENV HF_HUB_OFFLINE=1
 
 # Copied last so handler edits don't invalidate the pip and weight layers.
-COPY handler.py ${APP_ROOT}/handler.py
-# Lands in the repo root because the runpod SDK looks for test_input.json in the
-# working directory, and handler.py chdir's to LATENTSYNC_ROOT.
+#
+# Both land in the repo root, which is also WORKDIR. That matters for three
+# reasons: the runpod SDK looks for test_input.json in the working directory;
+# putting handler.py at the workdir root makes `latentsync` importable via
+# sys.path[0] without relying on PYTHONPATH; and it lets CMD reference
+# handler.py at the same relative path it occupies in this git repo, which is
+# what RunPod's GitHub integration scans for when it looks for the worker.
+COPY handler.py ${LATENTSYNC_ROOT}/handler.py
 COPY test_input.json ${LATENTSYNC_ROOT}/test_input.json
 
 # WORKDIR must stay at the repo root: upstream resolves several paths relatively
 # (DDIMScheduler.from_pretrained("configs"), FaceAnalysis(root="checkpoints/auxiliary"),
 # and config.data.mask_image_path). Running from anywhere else fails at request time.
-CMD ["python3", "-u", "/opt/app/handler.py"]
+CMD ["python3", "-u", "handler.py"]

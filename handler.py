@@ -148,13 +148,21 @@ def _build_pipeline():
     # Upstream gate: fp16 only on compute capability > 7, i.e. Ampere or newer.
     # On a T4 (7.5) or V100 (7.0) this silently becomes fp32 and 1.6 will not
     # fit in 24 GB -- so it is worth shouting about.
-    is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
+    has_cuda = torch.cuda.is_available()
+    is_fp16_supported = has_cuda and torch.cuda.get_device_capability()[0] > 7
     dtype = torch.float16 if is_fp16_supported else torch.float32
-    if not is_fp16_supported:
+    if not has_cuda:
+        log.error(
+            "no CUDA device visible to this process; inference cannot run. On RunPod "
+            "check the endpoint has a GPU attached; locally pass --gpus all."
+        )
+    elif not is_fp16_supported:
         log.warning(
-            "fp16 unsupported on this GPU (compute capability <= 7); falling back to "
-            "fp32. LatentSync 1.6 needs ~18 GB in fp16 and will likely OOM in fp32. "
-            "Use an Ampere-or-newer 24 GB GPU (L4 / A5000 / RTX 3090)."
+            "%s has compute capability %s, so upstream falls back to fp32. LatentSync "
+            "1.6 needs ~18 GB in fp16 and will almost certainly OOM in fp32. Use an "
+            "Ampere-or-newer 24 GB GPU (L4 / A5000 / RTX 3090).",
+            torch.cuda.get_device_name(0),
+            ".".join(str(x) for x in torch.cuda.get_device_capability()),
         )
 
     scheduler = DDIMScheduler.from_pretrained("configs")
