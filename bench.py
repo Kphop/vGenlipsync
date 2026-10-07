@@ -188,6 +188,29 @@ def report(results: list[dict], usd_per_hour: float, idle_sec: float) -> None:
 
     warm_cost = median_billed * usd_per_sec
     print(f"  Cost per clip       ${warm_cost:.4f}")
+
+    # RunPod bills executionTime, which spans more than the handler: returning a
+    # large result keeps the worker busy uploading after the handler returns, and
+    # that time is chargeable but invisible to our own timings. The gap exposes it.
+    gaps = [
+        billed_of(r) - r["total_sec"]
+        for r in basis
+        if r.get("total_sec") and r.get("runpod_execution_sec")
+    ]
+    if gaps:
+        gap = statistics.median(gaps)
+        encodes = [
+            r["raw"].get("timings_sec", {}).get("encode")
+            for r in basis
+            if r.get("raw")
+        ]
+        enc = statistics.median([e for e in encodes if e]) if any(encodes) else 0.0
+        print(
+            f"  Platform overhead   {gap:.1f}s billed outside the handler"
+            f"  (${gap * usd_per_sec:.4f}/clip)"
+        )
+        if enc:
+            print(f"  of which base64     {enc:.1f}s encode inside the handler")
     print(f"  + idle timeout      ${(median_billed + idle_sec) * usd_per_sec:.4f}  ({idle_sec:.0f}s idle)")
 
     if cold:
