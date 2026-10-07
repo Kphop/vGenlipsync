@@ -19,8 +19,10 @@ host and no download variance in the timings.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import pathlib
 import statistics
 import sys
 import time
@@ -37,7 +39,10 @@ ALTERNATIVES = (("WaveSpeedAI", 0.05), ("Replicate", 0.10))
 
 
 def build_payload(args: argparse.Namespace) -> dict:
-    payload: dict = {"return_video": not args.download_video}
+    # Off by default: a base64 mp4 inflates the response and the encode step
+    # lands in the timings we are trying to measure. Turn it on with --save-video
+    # when you want to judge output quality rather than cost.
+    payload: dict = {"return_video": bool(args.save_video)}
     if args.video_url:
         payload["video_url"] = args.video_url
     else:
@@ -74,7 +79,21 @@ def wait(session: requests.Session, endpoint: str, job_id: str, timeout: float) 
         time.sleep(POLL_INTERVAL_SEC)
 
 
-def run_once(session, endpoint, payload, timeout) -> dict:
+def save_video(out: dict, dest: pathlib.Path) -> str | None:
+    """Write the returned mp4 to disk and drop the base64 from the result.
+
+    Dropping it matters: the raw payload is kept for --out, and a few megabytes
+    of base64 per run would otherwise end up in that JSON file.
+    """
+    encoded = out.pop("video_base64", None)
+    if not encoded:
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(base64.b64decode(encoded))
+    return str(dest)
+
+
+def run_once(session, endpoint, payload, timeout, save_path=None) -> dict:
     wall_start = time.monotonic()
     job_id = submit(session, endpoint, payload)
     body = wait(session, endpoint, job_id, timeout)
@@ -87,9 +106,15 @@ def run_once(session, endpoint, payload, timeout) -> dict:
             "job_id": job_id,
             "status": body.get("status"),
             "error": out.get("error") or body.get("error") or "unknown",
+            "error_type": out.get("error_type"),
+            "vram": out.get("vram"),
+            "traceback": out.get("traceback"),
         }
 
+    saved = save_video(out, save_path) if save_path else None
+
     return {
+        "saved": saved,
         "ok": True,
         "job_id": job_id,
         "wall_sec": wall,
@@ -188,6 +213,14 @@ def report(results: list[dict], usd_per_hour: float, idle_sec: float) -> None:
         )
         print(f"  Peak VRAM           {peak:.1f} GB of {total_vram:.1f} GB  ({verdict})")
 
+    saved = [r["saved"] for r in ok if r.get("saved")]
+    if saved:
+        total_mb = sum(pathlib.Path(s).stat().st_size for s in saved) / 1024**2
+        print(f"  Saved videos        {len(saved)} file(s), {total_mb:.1f} MB total")
+        for s in saved:
+            print(f"                        {s}")
+        print("                      (timings include base64 encode/transfer)")
+
     audio_sec = ok[0].get("audio_sec")
     print()
     print(f"Monthly projection  (warm, {audio_sec or '?'}s clips)")
@@ -223,8 +256,12 @@ def main() -> int:
     p.add_argument("--video-url", help="use a remote video instead of the baked asset")
     p.add_argument("--audio-url")
     p.add_argument("--steps", type=int, help="override inference_steps")
-    p.add_argument("--download-video", action="store_true",
-                   help="also return the mp4 as base64 (slower, bigger payload)")
+    p.add_argument("--save-video", action="store_true",
+                   help="return each mp4 and write it to --save-dir, to judge output "
+                        "quality. Adds base64 encode/transfer time to the measurement, "
+                        "so leave it off for the cost numbers you intend to quote.")
+    p.add_argument("--save-dir", default="outputs",
+                   help="directory for --save-video mp4s (default: outputs/)")
     p.add_argument("--sleep", type=float, default=0.0,
                    help="seconds to wait between runs; exceed the idle timeout to force cold starts")
     p.add_argument("--timeout", type=float, default=900.0, help="per-job timeout")
@@ -247,15 +284,25 @@ def main() -> int:
             print(f"  sleeping {args.sleep:.0f}s before run {i + 1}")
             time.sleep(args.sleep)
         print(f"  run {i + 1}/{args.n} ...", end="", flush=True)
+        save_path = (
+            pathlib.Path(args.save_dir) / f"run-{i + 1:02d}.mp4" if args.save_video else None
+        )
         try:
-            r = run_once(session, args.endpoint_id, payload, args.timeout)
+            r = run_once(session, args.endpoint_id, payload, args.timeout, save_path)
         except Exception as exc:
             r = {"ok": False, "status": "CLIENT_ERROR", "error": f"{type(exc).__name__}: {exc}"}
         results.append(r)
         if r["ok"]:
-            print(f" ok  {r['runpod_execution_sec']:.1f}s billed")
+            msg = f" ok  {r['runpod_execution_sec']:.1f}s billed"
+            if r.get("saved"):
+                msg += f"  -> {r['saved']}"
+            print(msg)
         else:
             print(f" FAILED  {str(r.get('error'))[:70]}")
+            if r.get("error_type"):
+                print(f"           error_type={r['error_type']}")
+            if r.get("vram"):
+                print(f"           vram={r['vram']}")
 
     report(results, args.usd_per_hour, args.idle_timeout)
 

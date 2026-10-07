@@ -5,6 +5,7 @@ venv/
 results*.json
 *.log
 # benchmark outputs and any local media
+outputs/
 out*.mp4
 *.wav
 !test_input.json
