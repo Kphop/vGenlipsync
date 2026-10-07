@@ -1,0 +1,7 @@
+# This image is built on Linux (locally and by RunPod's GitHub builder) from a
+# Windows working copy. Force LF so no \r reaches pip, .dockerignore patterns,
+# or any shell invocation inside the build.
+* text=auto eol=lf
+*.png binary
+*.mp4 binary
+*.wav binary
