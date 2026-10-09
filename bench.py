@@ -37,6 +37,62 @@ TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"}
 # relying on them; provider pricing moves.
 ALTERNATIVES = (("WaveSpeedAI", 0.05), ("Replicate", 0.10))
 
+# RunPod serverless flex rates in $/hr, from runpod.io/pricing as of 2026-10.
+# Matched as case-insensitive substrings of the GPU name the handler reports,
+# so order matters: "l40s" must be tried before "l4".
+#
+# This table exists because RunPod assigns whatever card in the selected tier
+# is free, which is not necessarily the one you asked for -- a run requested on
+# a 4090 came back on an A5000, and pricing it at the 4090 rate overstated cost
+# by 59%. Trust the reported GPU over your own assumption.
+GPU_HOURLY = (
+    ("h100", 4.79),
+    ("a100", 2.72),
+    ("l40s", 1.75),
+    ("l40", 1.75),
+    ("rtx 6000 ada", 1.75),
+    ("a6000", 1.22),
+    ("a40", 1.22),
+    ("4090", 1.10),
+    ("a5000", 0.69),
+    ("3090", 0.69),
+    ("l4", 0.69),
+    ("a4000", 0.58),
+    ("rtx 4000", 0.58),
+)
+
+
+def resolve_rate(gpu_name: str | None, explicit: float | None) -> tuple[float, str]:
+    """Pick the $/hr rate to price with, preferring the detected GPU's own rate."""
+    detected = None
+    if gpu_name:
+        low = gpu_name.lower()
+        for key, price in GPU_HOURLY:
+            if key in low:
+                detected = price
+                break
+
+    if detected is None:
+        rate = explicit if explicit is not None else 0.69
+        how = (
+            f"from --usd-per-hour (GPU {gpu_name or 'unknown'} not in the rate table)"
+            if explicit is not None
+            else f"DEFAULT GUESS -- {gpu_name or 'unknown GPU'} not in the rate table"
+        )
+        return rate, how
+
+    if explicit is not None and abs(explicit - detected) > 0.001:
+        print()
+        print(
+            f"  !! You passed --usd-per-hour {explicit:.2f} but RunPod ran this on a\n"
+            f"     {gpu_name}, which bills at ${detected:.2f}/hr. Pricing at\n"
+            f"     ${detected:.2f}/hr instead. RunPod assigns any free card in the\n"
+            f"     tier, so the card you asked for is not always the card you get."
+        )
+        return detected, f"detected from {gpu_name}, overriding --usd-per-hour"
+
+    return detected, f"detected from {gpu_name}"
+
 
 def build_payload(args: argparse.Namespace) -> dict:
     # Off by default: a base64 mp4 inflates the response and the encode step
@@ -149,9 +205,11 @@ def fmt(value, suffix="", width=0, nd=2):
     return text.rjust(width) if width else text
 
 
-def report(results: list[dict], usd_per_hour: float, idle_sec: float) -> None:
+def report(results: list[dict], usd_per_hour: float | None, idle_sec: float) -> None:
     ok = [r for r in results if r["ok"]]
     failed = [r for r in results if not r["ok"]]
+    gpu_name = ok[0].get("gpu") if ok else None
+    usd_per_hour, rate_source = resolve_rate(gpu_name, usd_per_hour)
     usd_per_sec = usd_per_hour / 3600.0
 
     print()
@@ -183,7 +241,8 @@ def report(results: list[dict], usd_per_hour: float, idle_sec: float) -> None:
 
     print()
     print(f"Summary  (n={len(ok)} ok, {len(failed)} failed)")
-    print(f"  GPU                 {ok[0].get('gpu') or 'unknown'}  @ ${usd_per_hour:.2f}/hr")
+    print(f"  GPU                 {gpu_name or 'unknown'}  @ ${usd_per_hour:.2f}/hr")
+    print(f"  Rate source         {rate_source}")
 
     basis = warm or ok
     billed_times = sorted(billed_of(r) for r in basis)
@@ -286,8 +345,10 @@ def main() -> int:
     p.add_argument("--n", type=int, default=3, help="number of runs (default 3)")
     p.add_argument("--endpoint-id", default=os.environ.get("RUNPOD_ENDPOINT_ID"))
     p.add_argument("--api-key", default=os.environ.get("RUNPOD_API_KEY"))
-    p.add_argument("--usd-per-hour", type=float, default=0.69,
-                   help="GPU price for cost math (default 0.69 = 24GB flex tier)")
+    p.add_argument("--usd-per-hour", type=float, default=None,
+                   help="override the $/hr used for cost math. By default the rate is "
+                        "looked up from the GPU the worker actually reports, which is "
+                        "more reliable than assuming the card you selected.")
     p.add_argument("--idle-timeout", type=float, default=5.0,
                    help="endpoint idle timeout, included in the full per-clip price")
     p.add_argument("--video-path", default="assets/demo1_video.mp4",
