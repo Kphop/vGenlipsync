@@ -10,3 +10,4 @@ venv/
 results*.json
 README.md
 bench.py
+EXPLAIN.md
