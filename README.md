@@ -110,7 +110,42 @@ python bench.py --n 3 --out results.json                          # เก็บ
 
 ---
 
-## 4. ใช้งานตรงๆ (ถ้าไม่ผ่าน bench.py)
+## 4. หน้าเว็บสำหรับใช้งานจริง
+
+ถ้าไม่อยากพิมพ์คำสั่ง มีหน้าเว็บให้เลือกไฟล์ กดปุ่ม แล้วดาวน์โหลดคลิปที่เสร็จแล้ว
+
+```powershell
+cd C:\Users\Phop\Documents\ClaudeCode\GenVideoLipsync
+$env:RUNPOD_API_KEY="<key>"; $env:RUNPOD_ENDPOINT_ID="<endpoint-id>"
+python webapp\server.py
+```
+
+เบราว์เซอร์จะเปิดที่ `http://127.0.0.1:8000` ให้เอง ลากไฟล์วิดีโอ (หรือรูปนิ่ง) กับไฟล์เสียงมาวาง เลือกคุณภาพ แล้วกดเริ่ม พอเสร็จจะเล่นให้ดูพร้อมปุ่มดาวน์โหลด และแสดงเวลา/VRAM/ค่าใช้จ่ายของงานนั้น
+
+ไฟล์ที่ได้ถูกเก็บไว้ที่ `outputs\web\<job-id>.mp4` ด้วย
+
+### ทำไมต้องมีเซิร์ฟเวอร์ ไม่ใช่ไฟล์ HTML เฉยๆ
+
+**API key ห้ามไปอยู่ในเบราว์เซอร์** หน้าเว็บที่ยิง `api.runpod.ai` ตรงๆ จะมี key ฝังอยู่ ซึ่งใครเปิด view-source ก็เอาไปจ่ายเงินและคุม RunPod account ทั้งบัญชีได้ `server.py` ถือ key ไว้ฝั่งเครื่องคุณ เบราว์เซอร์คุยกับ `127.0.0.1` เท่านั้น
+
+```
+เบราว์เซอร์ ──► server.py (ถือ API key) ──► RunPod
+  localhost          เครื่องคุณ
+```
+
+เซิร์ฟเวอร์ผูกกับ `127.0.0.1` อย่างเดียว **อย่าเปิดออกเน็ต**ถ้ายังไม่ได้ใส่ระบบล็อกอิน เพราะทุก request ที่มันส่งต่อคือเงินจริง
+
+### ข้อจำกัด
+
+| | |
+|---|---|
+| ขนาดไฟล์ | 6 MB ต่อไฟล์ — RunPod จำกัด request ที่ ~10 MB และ base64 ทำให้โตขึ้น 33% |
+| ความยาวเสียง | 60 วินาที (ปรับได้ด้วย env `MAX_AUDIO_SECONDS` บน endpoint) |
+| ตัวแปรที่ตั้งได้ | `PORT` (ค่าเริ่ม 8000), `EXEC_TIMEOUT_SEC` (1800), `NO_BROWSER=1` ไม่ต้องเปิดเบราว์เซอร์เอง |
+
+ถ้าคลิปยาวกว่านี้ต้องต่อ S3 ก่อน (ดู `EXPLAIN.md` หัวข้อ 11.1)
+
+## 5. ใช้งานตรงๆ (ถ้าไม่ผ่าน bench.py)
 
 ```bash
 curl -X POST https://api.runpod.ai/v2/<endpoint-id>/run \
@@ -136,7 +171,7 @@ curl -X POST https://api.runpod.ai/v2/<endpoint-id>/run \
 
 ---
 
-## 5. ทดสอบในเครื่องก่อน (ถ้ามี NVIDIA GPU 24 GB)
+## 6. ทดสอบในเครื่องก่อน (ถ้ามี NVIDIA GPU 24 GB)
 
 ```powershell
 docker run --rm --gpus all $IMAGE python3 -u /opt/app/handler.py
@@ -152,7 +187,7 @@ docker run --rm $IMAGE python3 -c "import torch, onnxruntime; print(torch.__vers
 
 ---
 
-## 6. ปิดบิลหลังวัดเสร็จ
+## 7. ปิดบิลหลังวัดเสร็จ
 
 1. **ลบ endpoint ทิ้ง** หรือเซ็ต Max Workers = 0
 2. เช็ค Billing ว่าไม่มี active worker ค้าง
@@ -169,6 +204,8 @@ docker run --rm $IMAGE python3 -c "import torch, onnxruntime; print(torch.__vers
 | `scripts/prefetch.py` | ดาวน์โหลด weights ตอน build + **ตรวจ API contract ของ upstream** |
 | `handler.py` | RunPod handler โหลดโมเดลครั้งเดียว + วัด timing/VRAM/ราคา |
 | `bench.py` | client ยิงซ้ำแล้วสรุปเป็นตารางราคา (รันบนเครื่องคุณ) |
+| `webapp/server.py` | เซิร์ฟเวอร์เล็กๆ ถือ API key แล้วส่งต่อให้ RunPod |
+| `webapp/index.html` | หน้าเว็บอัปโหลดไฟล์ + ดาวน์โหลดผลลัพธ์ |
 | `test_input.json` | input สำหรับ smoke test ในเครื่อง |
 | `requirements.txt` | deps ของเราเท่านั้น — LatentSync ใช้ `requirements.txt` ของ repo |
 

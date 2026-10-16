@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LatentSync — ลิปซิงก์</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #d9dde3;
+    --text: #16191d;
+    --muted: #666e79;
+    --accent: #2f6df6;
+    --accent-text: #ffffff;
+    --ok: #1a7f4b;
+    --err: #c0372b;
+    --warn: #9a6400;
+    --drop: #f0f3f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a;
+      --panel: #1c2024;
+      --border: #333a41;
+      --text: #e8eaed;
+      --muted: #99a1ab;
+      --accent: #5b8dff;
+      --accent-text: #0c1016;
+      --ok: #4ec98a;
+      --err: #ff7a6b;
+      --warn: #e0a83a;
+      --drop: #222930;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 64px;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.6 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin-bottom: 16px;
+  }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 680px) { .row { grid-template-columns: 1fr; } }
+  label.field { display: block; font-weight: 600; margin-bottom: 8px; font-size: 14px; }
+  .drop {
+    border: 2px dashed var(--border); border-radius: 8px; background: var(--drop);
+    padding: 20px 14px; text-align: center; cursor: pointer; transition: border-color .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); }
+  .drop .hint { color: var(--muted); font-size: 13px; }
+  .drop .name { font-weight: 600; word-break: break-all; margin-bottom: 2px; }
+  .drop .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  input[type=file] { display: none; }
+  video.preview { width: 100%; border-radius: 6px; margin-top: 10px; background: #000; }
+  audio.preview { width: 100%; margin-top: 10px; }
+  fieldset { border: 0; padding: 0; margin: 20px 0 0; }
+  .steps { display: flex; gap: 10px; flex-wrap: wrap; }
+  .steps label {
+    flex: 1; min-width: 180px; border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; cursor: pointer;
+  }
+  .steps label:has(input:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .steps input { margin-right: 8px; }
+  .steps .t { font-weight: 600; }
+  .steps .d { color: var(--muted); font-size: 13px; display: block; margin-top: 2px; }
+  button.go {
+    width: 100%; margin-top: 20px; padding: 13px; border: 0; border-radius: 8px;
+    background: var(--accent); color: var(--accent-text);
+    font-size: 16px; font-weight: 600; cursor: pointer;
+  }
+  button.go:disabled { opacity: .5; cursor: not-allowed; }
+  .msg { padding: 12px 14px; border-radius: 8px; margin-top: 14px; font-size: 14px; }
+  .msg.err { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
+  .msg.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+  .msg.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+  .spin {
+    display: inline-block; width: 15px; height: 15px; vertical-align: -2px; margin-right: 8px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: s 0.8s linear infinite;
+  }
+  @keyframes s { to { transform: rotate(360deg); } }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 12px; }
+  td { padding: 6px 0; border-bottom: 1px solid var(--border); }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: 0; }
+  .dl {
+    display: inline-block; margin-top: 14px; padding: 11px 20px; border-radius: 8px;
+    background: var(--accent); color: var(--accent-text); text-decoration: none; font-weight: 600;
+  }
+  .hidden { display: none !important; }
+  code { background: var(--drop); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>LatentSync — ลิปซิงก์</h1>
+  <div class="sub">ใส่วิดีโอ (หรือรูปนิ่ง) กับไฟล์เสียง แล้วได้คลิปที่ปากขยับตามเสียง</div>
+
+  <div id="cfgWarn" class="msg err hidden"></div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label class="field">1. วิดีโอ หรือ รูปภาพ</label>
+        <div class="drop" id="dropV">
+          <div id="emptyV"><div class="hint">คลิกเพื่อเลือก หรือลากไฟล์มาวาง</div>
+            <div class="hint">mp4, mov, webm, jpg, png</div></div>
+          <div id="infoV" class="hidden"><div class="name"></div><div class="meta"></div></div>
+        </div>
+        <input type="file" id="fileV" accept="video/*,image/*">
+        <video id="prevV" class="preview hidden" controls muted playsinline></video>
+      </div>
+
+      <div>
+        <label class="field">2. ไฟล์เสียง</label>
+        <div class="drop" id="dropA">
+          <div id="emptyA"><div class="hint">คลิกเพื่อเลือก หรือลากไฟล์มาวาง</div>
+            <div class="hint">wav, mp3, m4a</div></div>
+          <div id="infoA" class="hidden"><div class="name"></div><div class="meta"></div></div>
+        </div>
+        <input type="file" id="fileA" accept="audio/*">
+        <audio id="prevA" class="preview hidden" controls></audio>
+      </div>
+    </div>
+
+    <fieldset>
+      <label class="field">3. คุณภาพ</label>
+      <div class="steps">
+        <label>
+          <input type="radio" name="steps" value="10" checked>
+          <span class="t">เร็ว — 10 steps</span>
+          <span class="d">ถูกกว่า ~30% วัดแล้วคุณภาพแทบไม่ต่าง</span>
+        </label>
+        <label>
+          <input type="radio" name="steps" value="20">
+          <span class="t">ละเอียด — 20 steps</span>
+          <span class="d">ค่าเริ่มต้นของโมเดล ช้ากว่า</span>
+        </label>
+      </div>
+    </fieldset>
+
+    <div id="estimate" class="msg warn hidden"></div>
+    <div id="sizeWarn" class="msg err hidden"></div>
+
+    <button class="go" id="go" disabled>เลือกไฟล์ให้ครบก่อน</button>
+  </div>
+
+  <div class="card hidden" id="progress">
+    <div><span class="spin"></span><span id="progText">กำลังส่งงาน…</span></div>
+    <div class="sub" style="margin:10px 0 0" id="progHint"></div>
+  </div>
+
+  <div class="card hidden" id="result">
+    <div class="msg ok" style="margin-top:0">เสร็จแล้ว</div>
+    <video id="outVideo" class="preview" controls playsinline></video>
+    <a class="dl" id="dlLink" download>⬇ ดาวน์โหลดคลิป</a>
+    <table id="stats"></table>
+  </div>
+
+  <div class="card hidden" id="errBox">
+    <div class="msg err" style="margin-top:0" id="errText"></div>
+    <div class="sub" style="margin:10px 0 0" id="errHint"></div>
+  </div>
+
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { visual: null, audio: null, visualIsImage: false, audioSec: null, maxMB: 6 };
+
+// Measured on an A5000: inference seconds per second of audio.
+const RTF = { 10: 16.6, 20: 23.6 };
+const USD_PER_SEC = 0.69 / 3600;
+
+const fmtMB = b => (b / 1048576).toFixed(1) + " MB";
+const fmtSec = s => s < 60 ? `${Math.round(s)} วินาที` : `${Math.floor(s/60)} นาที ${Math.round(s%60)} วินาที`;
+
+fetch("/api/config").then(r => r.json()).then(c => {
+  state.maxMB = c.max_upload_mb;
+  if (!c.configured) {
+    const w = $("#cfgWarn");
+    w.textContent = "เซิร์ฟเวอร์ยังไม่มี RUNPOD_API_KEY / RUNPOD_ENDPOINT_ID — ส่งงานไม่ได้ ปิดเซิร์ฟเวอร์ ตั้งค่า แล้วเปิดใหม่";
+    w.classList.remove("hidden");
+  }
+}).catch(() => {});
+
+function wireDrop(dropId, inputId, kind) {
+  const drop = $(dropId), input = $(inputId);
+  drop.onclick = () => input.click();
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = e => {
+    e.preventDefault(); drop.classList.remove("over");
+    if (e.dataTransfer.files[0]) { input.files = e.dataTransfer.files; input.onchange(); }
+  };
+  input.onchange = () => {
+    const f = input.files[0];
+    if (!f) return;
+    if (kind === "visual") {
+      state.visual = f;
+      state.visualIsImage = f.type.startsWith("image/");
+      $("#emptyV").classList.add("hidden");
+      $("#infoV").classList.remove("hidden");
+      $("#infoV .name").textContent = f.name;
+      $("#infoV .meta").textContent = fmtMB(f.size) + (state.visualIsImage ? " · รูปนิ่ง" : "");
+      const v = $("#prevV");
+      if (!state.visualIsImage) { v.src = URL.createObjectURL(f); v.classList.remove("hidden"); }
+      else { v.classList.add("hidden"); }
+    } else {
+      state.audio = f;
+      $("#emptyA").classList.add("hidden");
+      $("#infoA").classList.remove("hidden");
+      $("#infoA .name").textContent = f.name;
+      $("#infoA .meta").textContent = fmtMB(f.size);
+      const a = $("#prevA");
+      a.src = URL.createObjectURL(f);
+      a.classList.remove("hidden");
+      // Audio length drives output length and therefore cost, so read it.
+      a.onloadedmetadata = () => { state.audioSec = a.duration; refresh(); };
+    }
+    refresh();
+  };
+}
+wireDrop("#dropV", "#fileV", "visual");
+wireDrop("#dropA", "#fileA", "audio");
+document.querySelectorAll('input[name=steps]').forEach(r => r.onchange = refresh);
+
+function refresh() {
+  const btn = $("#go"), sizeWarn = $("#sizeWarn"), est = $("#estimate");
+  const ready = state.visual && state.audio;
+
+  let tooBig = null;
+  const limit = state.maxMB * 1048576;
+  if (state.visual && state.visual.size > limit) tooBig = "วิดีโอ/รูป";
+  else if (state.audio && state.audio.size > limit) tooBig = "เสียง";
+
+  if (tooBig) {
+    sizeWarn.textContent = `ไฟล์${tooBig}ใหญ่เกิน ${state.maxMB} MB — RunPod จำกัด request ไว้ที่ ~10 MB ลองตัดคลิปให้สั้นลงหรือลดความละเอียด`;
+    sizeWarn.classList.remove("hidden");
+  } else sizeWarn.classList.add("hidden");
+
+  if (ready && state.audioSec) {
+    const steps = +document.querySelector('input[name=steps]:checked').value;
+    const sec = state.audioSec * RTF[steps];
+    est.textContent = `เสียงยาว ${state.audioSec.toFixed(1)} วินาที → คาดว่าใช้เวลา ~${fmtSec(sec)} ค่าใช้จ่ายราว $${(sec * USD_PER_SEC).toFixed(3)} (ประมาณจากที่เคยวัดบน A5000 ของจริงอาจต่างไป)`;
+    est.classList.remove("hidden");
+  } else est.classList.add("hidden");
+
+  btn.disabled = !ready || !!tooBig;
+  btn.textContent = !ready ? "เลือกไฟล์ให้ครบก่อน" : tooBig ? "ไฟล์ใหญ่เกินไป" : "เริ่มลิปซิงก์";
+}
+
+const toB64 = file => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result.split(",", 2)[1]);
+  r.onerror = () => rej(new Error("อ่านไฟล์ไม่สำเร็จ"));
+  r.readAsDataURL(file);
+});
+
+function showError(text, hint) {
+  $("#progress").classList.add("hidden");
+  $("#errText").textContent = text;
+  $("#errHint").textContent = hint || "";
+  $("#errBox").classList.remove("hidden");
+  $("#go").disabled = false;
+  refresh();
+}
+
+const ERR_HINT = {
+  bad_input: "ไฟล์ที่ส่งไปมีปัญหา — ลองตรวจว่าวิดีโอมีใบหน้าชัดเจน และเสียงไม่ยาวเกิน 60 วินาที",
+  cuda_oom: "GPU หน่วยความจำไม่พอ — ต้องใช้การ์ด 24 GB ขึ้นไป (L4 / A5000 / RTX 3090)",
+  inference_error: "โมเดลทำงานผิดพลาด ดู traceback ใน log ของ RunPod",
+};
+
+$("#go").onclick = async () => {
+  $("#errBox").classList.add("hidden");
+  $("#result").classList.add("hidden");
+  $("#go").disabled = true;
+  $("#progress").classList.remove("hidden");
+  $("#progText").textContent = "กำลังอ่านและส่งไฟล์…";
+  $("#progHint").textContent = "";
+
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const s = (Date.now() - started) / 1000;
+    $("#progHint").textContent = `ผ่านไป ${fmtSec(s)}`;
+  }, 1000);
+
+  try {
+    const [visual_b64, audio_b64] = await Promise.all([toB64(state.visual), toB64(state.audio)]);
+    const steps = +document.querySelector('input[name=steps]:checked').value;
+
+    const r = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visual_b64, audio_b64, steps, visual_is_image: state.visualIsImage }),
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || `ส่งงานไม่สำเร็จ (${r.status})`);
+
+    $("#progText").textContent = "กำลังประมวลผลบน GPU…";
+
+    while (true) {
+      await new Promise(res => setTimeout(res, 3000));
+      const sr = await fetch(`/api/jobs/${j.id}`);
+      const s = await sr.json();
+
+      if (s.error) throw Object.assign(new Error(s.error), { type: s.error_type });
+
+      if (s.status === "IN_QUEUE") $("#progText").textContent = "รออยู่ในคิว — RunPod กำลังเปิดเครื่อง…";
+      else if (s.status === "IN_PROGRESS") $("#progText").textContent = "กำลังประมวลผลบน GPU…";
+
+      if (s.status === "COMPLETED") { clearInterval(tick); return done(s); }
+    }
+  } catch (e) {
+    clearInterval(tick);
+    showError(e.message, ERR_HINT[e.type]);
+  }
+};
+
+function done(s) {
+  $("#progress").classList.add("hidden");
+  $("#outVideo").src = s.video_url;
+  $("#dlLink").href = s.video_url;
+  $("#dlLink").setAttribute("download", "lipsync-" + Date.now() + ".mp4");
+
+  const t = s.telemetry || {};
+  const billed = s.execution_sec || 0;
+  const rows = [
+    ["เวลาประมวลผล", `${(t.timings_sec?.inference ?? 0).toFixed(1)} วินาที`],
+    ["เวลาที่ถูกคิดเงิน", `${billed.toFixed(1)} วินาที`],
+    ["ค่าใช้จ่าย (ประมาณ)", `$${(billed * USD_PER_SEC).toFixed(4)}`],
+    ["GPU", t.vram?.gpu || "-"],
+    ["VRAM สูงสุด", t.vram?.peak_reserved_gb ? `${t.vram.peak_reserved_gb} GB` : "-"],
+    ["ความยาวเสียง", t.media?.audio_sec ? `${t.media.audio_sec} วินาที` : "-"],
+    ["ขนาดไฟล์", s.video_bytes ? fmtMB(s.video_bytes) : "-"],
+    ["เครื่องเพิ่งเปิด (cold start)", t.worker?.cold_start ? "ใช่" : "ไม่"],
+  ];
+  $("#stats").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+  $("#result").classList.remove("hidden");
+  $("#go").disabled = false;
+  refresh();
+}
+</script>
+</body>
+</html>
