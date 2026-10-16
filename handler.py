@@ -244,11 +244,12 @@ def _check_onnxruntime_providers() -> None:
     """
     try:
         import onnxruntime
-    except ImportError:
-        log.warning("onnxruntime not importable; face detection will fail")
+
+        providers = onnxruntime.get_available_providers()
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must never be fatal
+        log.warning("could not query onnxruntime providers: %s", exc)
         return
 
-    providers = onnxruntime.get_available_providers()
     if "CUDAExecutionProvider" not in providers:
         log.error(
             "=" * 72 + "\nCUDAExecutionProvider unavailable (providers=%s).\n"
@@ -647,12 +648,26 @@ def handler(job: dict) -> dict:
 
 
 def _startup() -> None:
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
-    # Clear anything a previously killed worker left behind.
-    for leftover in WORK_DIR.iterdir():
-        shutil.rmtree(leftover, ignore_errors=True)
+    """Prepare the worker. Nothing in here may raise.
 
-    _check_onnxruntime_providers()
+    This runs at import, so an exception escaping it kills the process before
+    runpod.serverless.start() is ever reached. RunPod then reports the worker as
+    unhealthy -- "exiting before it can process jobs" -- with no job-level error
+    to inspect, which is far harder to diagnose than a worker that stays up and
+    returns a readable error per job.
+    """
+    try:
+        WORK_DIR.mkdir(parents=True, exist_ok=True)
+        # Clear anything a previously killed worker left behind.
+        for leftover in WORK_DIR.iterdir():
+            shutil.rmtree(leftover, ignore_errors=True)
+    except Exception:
+        log.error("could not prepare %s:\n%s", WORK_DIR, traceback.format_exc())
+
+    try:
+        _check_onnxruntime_providers()
+    except Exception:
+        log.error("provider check failed:\n%s", traceback.format_exc())
 
     if EAGER_LOAD:
         try:
@@ -672,7 +687,12 @@ def _concurrency_modifier(_current_concurrency: int) -> int:
     return 1
 
 
-_startup()
+try:
+    _startup()
+except Exception:
+    # Last line of defence. A worker that stays up and fails each job with a
+    # readable message beats one that vanishes at boot.
+    log.error("startup failed, serving anyway:\n%s", traceback.format_exc())
 
 if __name__ == "__main__":
     # Written on one line with `start({` adjacent: RunPod's GitHub integration
