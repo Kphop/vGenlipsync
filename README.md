@@ -196,10 +196,53 @@ docker run --rm $IMAGE python3 -c "import torch, onnxruntime; print(torch.__vers
 
 ---
 
+## Build ต้อง reproducible (เรียนรู้จากการล่มจริง 2026-10-16)
+
+endpoint ที่ใช้งานได้อยู่ดีๆ ก็พังด้วย `All workers are unhealthy` ทั้งที่ **ไฟล์ใน image ไม่เปลี่ยนเลยแม้แต่ไบต์เดียว** สิ่งเดียวที่ต่างคือวันที่ build
+
+สาเหตุลึกกว่าการที่ไลบรารีขยับเวอร์ชัน — `pip check` บน image ที่เคยใช้งานได้รายงานว่า:
+
+```
+gradio 5.24.0     ต้องการ tomlkit<0.14.0  แต่มี tomlkit 0.15.1
+mediapipe 0.10.11 ต้องการ protobuf<4      แต่มี protobuf 7.36.2
+```
+
+**ชุดไลบรารีนั้นขัดแย้งกันเองมาตลอด** เกิดจาก pip ติดตั้งทีละขั้น: สองตัวนี้ลงก่อน แล้วขั้นหลังอัป dependency ของมันทับโดยไม่ย้อนกลับไปตรวจ มันไม่เคยถูกต้อง แค่บังเอิญไม่พังเพราะไม่มีใครเรียกใช้
+
+### ทางแก้
+
+1. **`requirements.lock.txt`** — ปักหมุด 205 แพ็กเกจ ใช้กับ `pip install` ทุกขั้นผ่าน `-c` รวมถึง `pip`/`setuptools`/`wheel` เอง
+2. **ตัด `mediapipe` กับ `gradio` ออก** — ไม่มีตัวไหนอยู่ในเส้นทาง inference (`mediapipe` ใช้แค่ใน `preprocess/` + `eval/`, `gradio` ใช้แค่ใน `gradio_app.py`) และเป็นต้นเหตุที่ทำให้ล็อกเวอร์ชันไม่ได้
+
+ผลพลอยได้: ได้ `opencv 4.9.0` ตามที่ upstream ปักหมุดจริง (เดิมได้ 4.11.0 เพราะ opencv ติดตั้งซ้อน 3 ตัวแล้วตัวหลังทับ)
+
+### ⚠️ RunPod build ใหม่ทุกครั้งที่ push
+
+commit ที่แก้แค่ README ก็ทำให้ production ล่มได้ เพราะมันไป build ใหม่ด้วยไลบรารีของวันนั้น — ซึ่งคือสิ่งที่เกิดขึ้นจริง `requirements.lock.txt` คือสิ่งที่กันไม่ให้เกิดซ้ำ
+
+### ตรวจก่อน deploy เสมอ
+
+```powershell
+docker buildx build --platform linux/amd64 -t latentsync-runpod:test --load .
+docker run --rm latentsync-runpod:test python3 -m pip check   # ต้องสะอาด
+docker run --rm latentsync-runpod:test                         # SDK ต้องเริ่มทำงาน
+```
+
+### อัปเดต lock เมื่อตั้งใจจะอัปเกรด
+
+```powershell
+docker run --rm <image> python3 -m pip freeze | Select-String "^[A-Za-z0-9._-]+==" | Sort-Object
+```
+
+เอาผลลัพธ์แทนที่ส่วนรายการใน `requirements.lock.txt` แล้วทดสอบใหม่ทั้งชุด
+
+---
+
 ## โครงสร้าง
 
 | ไฟล์ | หน้าที่ |
 |---|---|
+| `requirements.lock.txt` | ปักหมุดเวอร์ชันไลบรารีทั้งหมด ทำให้ build ซ้ำได้ผลเดิม |
 | `Dockerfile` | CUDA 12.1 + py3.10 + LatentSync pinned `a229c394` + weights ทั้งหมด |
 | `scripts/prefetch.py` | ดาวน์โหลด weights ตอน build + **ตรวจ API contract ของ upstream** |
 | `handler.py` | RunPod handler โหลดโมเดลครั้งเดียว + วัด timing/VRAM/ราคา |

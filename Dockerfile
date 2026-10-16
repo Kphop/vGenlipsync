@@ -38,13 +38,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --upgrade pip setuptools wheel
+# Pinned like everything else: pip's own resolver changes between releases, so
+# an unpinned "--upgrade pip" is itself a source of build drift. These are the
+# versions present in the image that was verified working.
+RUN python3 -m pip install --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0
 
 # Install torch explicitly from the cu121 index BEFORE the repo requirements.
 # The repo's requirements.txt uses --extra-index-url, which leaves pip free to
 # resolve torch 2.5.1 from PyPI (a cu124 build) instead. Pinning it here keeps
 # the CUDA minor version aligned with the base image.
-RUN python3 -m pip install torch==2.5.1 torchvision==0.20.1 \
+# Every pip step below passes -c with this lock. Without it the image is only
+# reproducible by accident: a rebuild on 2026-10-16 from byte-identical source
+# produced workers that died before serving a job, because unpinned transitive
+# dependencies had drifted over a week. Constraints cap versions for whatever
+# gets installed without forcing extra installs.
+COPY requirements.lock.txt ${APP_ROOT}/requirements.lock.txt
+
+RUN python3 -m pip install -c "${APP_ROOT}/requirements.lock.txt" \
+        torch==2.5.1 torchvision==0.20.1 \
         --index-url https://download.pytorch.org/whl/cu121
 
 RUN git clone https://github.com/bytedance/LatentSync.git "${LATENTSYNC_ROOT}" \
@@ -54,12 +65,32 @@ RUN git clone https://github.com/bytedance/LatentSync.git "${LATENTSYNC_ROOT}" \
 # insightface==0.7.3 ships as an sdist and its setup.py needs Cython + numpy
 # importable at build time. Installing them first avoids a build failure that
 # otherwise surfaces 10 minutes into the layer.
-RUN python3 -m pip install "cython<3.0" "numpy==1.26.4"
+RUN python3 -m pip install -c "${APP_ROOT}/requirements.lock.txt" "cython<3.0" "numpy==1.26.4"
 
-RUN python3 -m pip install -r "${LATENTSYNC_ROOT}/requirements.txt"
+# mediapipe and gradio are dropped deliberately. Neither is on the inference
+# path: mediapipe is imported only by preprocess/ and eval/ (training-data and
+# evaluation scripts) and gradio only by gradio_app.py, the interactive demo.
+#
+# They also have to go for the build to be pinnable at all. `pip check` on the
+# image that ran our benchmarks reports exactly two broken requirements:
+#
+#   gradio 5.24.0    requires tomlkit<0.14.0, but has tomlkit 0.15.1
+#   mediapipe 0.10.11 requires protobuf<4,   but has protobuf 7.36.2
+#
+# That image "worked" only because pip installs sequentially: these two went in
+# first, and later steps upgraded their dependencies behind their backs without
+# re-checking. mediapipe was in fact already broken at runtime, raising
+# MessageFactory.GetPrototype on import. No single resolution can reproduce
+# that state, so the set cannot be locked while they are present.
+#
+# Dropping them also sheds jaxlib, pandas and friends -- several hundred MB
+# that nothing here loads.
+RUN grep -vE '^(mediapipe|gradio)' "${LATENTSYNC_ROOT}/requirements.txt" > /tmp/reqs-trimmed.txt \
+ && python3 -m pip install -c "${APP_ROOT}/requirements.lock.txt" -r /tmp/reqs-trimmed.txt \
+ && rm -f /tmp/reqs-trimmed.txt
 
 COPY requirements.txt ${APP_ROOT}/requirements.txt
-RUN python3 -m pip install -r "${APP_ROOT}/requirements.txt"
+RUN python3 -m pip install -c "${APP_ROOT}/requirements.lock.txt" -r "${APP_ROOT}/requirements.txt"
 
 # Belt and braces with the ldconfig pass inside prefetch.py: make torch's bundled
 # NVIDIA libraries discoverable so onnxruntime-gpu can find cuDNN/cuBLAS.
